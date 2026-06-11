@@ -1,0 +1,856 @@
+// ============================================================
+//  Health Storylines™ — Sample Spring Boot Backend
+//  Covers: User, Medication, Symptom, Vitals, Mood, Journal
+// ============================================================
+
+package com.healthstorylines;
+
+// ── Dependencies (pom.xml excerpt) ──────────────────────────
+// spring-boot-starter-web
+// spring-boot-starter-data-jpa
+// spring-boot-starter-security
+// spring-boot-starter-validation
+// h2 (dev) / postgresql (prod)
+// lombok
+// jjwt (JWT auth)
+// ─────────────────────────────────────────────────────────────
+
+
+// ==================== ENTITIES ====================
+
+package com.healthstorylines.model;
+
+import jakarta.persistence.*;
+import jakarta.validation.constraints.*;
+import lombok.*;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.List;
+
+// ---------- User ----------
+@Entity
+@Table(name = "users")
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class User {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @NotBlank
+    private String fullName;
+
+    @Email
+    @Column(unique = true, nullable = false)
+    private String email;
+
+    @NotBlank
+    private String passwordHash;
+
+    private LocalDate dateOfBirth;
+    private String condition;          // e.g. "Heart Failure", "ADHD"
+    private String timezone;
+
+    @OneToMany(mappedBy = "user", cascade = CascadeType.ALL)
+    private List<MedicationEntry> medications;
+
+    @OneToMany(mappedBy = "user", cascade = CascadeType.ALL)
+    private List<SymptomEntry> symptoms;
+
+    @OneToMany(mappedBy = "user", cascade = CascadeType.ALL)
+    private List<VitalEntry> vitals;
+
+    @OneToMany(mappedBy = "user", cascade = CascadeType.ALL)
+    private List<MoodEntry> moods;
+
+    @OneToMany(mappedBy = "user", cascade = CascadeType.ALL)
+    private List<JournalEntry> journals;
+
+    private LocalDateTime createdAt;
+    private LocalDateTime updatedAt;
+
+    @PrePersist
+    protected void onCreate() { createdAt = updatedAt = LocalDateTime.now(); }
+
+    @PreUpdate
+    protected void onUpdate() { updatedAt = LocalDateTime.now(); }
+}
+
+
+// ---------- MedicationEntry ----------
+@Entity
+@Table(name = "medication_entries")
+@Data @NoArgsConstructor @AllArgsConstructor @Builder
+public class MedicationEntry {
+
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
+    @NotBlank
+    private String medicationName;
+
+    private String dosage;           // e.g. "10mg"
+    private String frequency;        // e.g. "Twice daily"
+    private Boolean taken;
+    private LocalDateTime takenAt;
+    private String notes;
+    private LocalDateTime loggedAt;
+
+    @PrePersist
+    protected void onCreate() { loggedAt = LocalDateTime.now(); }
+}
+
+
+// ---------- SymptomEntry ----------
+@Entity
+@Table(name = "symptom_entries")
+@Data @NoArgsConstructor @AllArgsConstructor @Builder
+public class SymptomEntry {
+
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
+    @NotBlank
+    private String symptomName;       // e.g. "Fatigue", "Chest pain"
+
+    @Min(1) @Max(10)
+    private Integer severity;         // 1 = mild, 10 = severe
+
+    private String notes;
+    private LocalDateTime loggedAt;
+
+    @PrePersist
+    protected void onCreate() { loggedAt = LocalDateTime.now(); }
+}
+
+
+// ---------- VitalEntry ----------
+@Entity
+@Table(name = "vital_entries")
+@Data @NoArgsConstructor @AllArgsConstructor @Builder
+public class VitalEntry {
+
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
+    private Double weight;            // kg
+    private Integer systolic;         // blood pressure mmHg
+    private Integer diastolic;
+    private Integer heartRate;        // bpm
+    private Double bloodSugar;        // mmol/L
+    private Double oxygenSaturation;  // %
+    private Double temperature;       // °C
+    private Integer sleepHours;
+    private Integer stepsCount;
+
+    private String deviceSource;      // e.g. "Fitbit", "iHealth"
+    private LocalDateTime measuredAt;
+
+    @PrePersist
+    protected void onCreate() { measuredAt = LocalDateTime.now(); }
+}
+
+
+// ---------- MoodEntry ----------
+@Entity
+@Table(name = "mood_entries")
+@Data @NoArgsConstructor @AllArgsConstructor @Builder
+public class MoodEntry {
+
+    public enum MoodLevel { VERY_SAD, SAD, NEUTRAL, HAPPY, VERY_HAPPY }
+
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
+    @Enumerated(EnumType.STRING)
+    private MoodLevel mood;
+
+    private String triggers;          // e.g. "Work stress", "Good sleep"
+    private String notes;
+    private LocalDateTime loggedAt;
+
+    @PrePersist
+    protected void onCreate() { loggedAt = LocalDateTime.now(); }
+}
+
+
+// ---------- JournalEntry ----------
+@Entity
+@Table(name = "journal_entries")
+@Data @NoArgsConstructor @AllArgsConstructor @Builder
+public class JournalEntry {
+
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
+    @NotBlank
+    private String title;
+
+    @Column(columnDefinition = "TEXT")
+    private String content;
+
+    private Boolean isSharedWithDoctor;
+    private LocalDateTime createdAt;
+    private LocalDateTime updatedAt;
+
+    @PrePersist
+    protected void onCreate() { createdAt = updatedAt = LocalDateTime.now(); }
+
+    @PreUpdate
+    protected void onUpdate() { updatedAt = LocalDateTime.now(); }
+}
+
+
+// ==================== REPOSITORIES ====================
+
+package com.healthstorylines.repository;
+
+import com.healthstorylines.model.*;
+import org.springframework.data.jpa.repository.*;
+import org.springframework.stereotype.Repository;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Optional;
+
+@Repository
+public interface UserRepository extends JpaRepository<User, Long> {
+    Optional<User> findByEmail(String email);
+    boolean existsByEmail(String email);
+}
+
+@Repository
+public interface MedicationRepository extends JpaRepository<MedicationEntry, Long> {
+    List<MedicationEntry> findByUserIdOrderByLoggedAtDesc(Long userId);
+    List<MedicationEntry> findByUserIdAndLoggedAtBetween(Long userId,
+            LocalDateTime start, LocalDateTime end);
+}
+
+@Repository
+public interface SymptomRepository extends JpaRepository<SymptomEntry, Long> {
+    List<SymptomEntry> findByUserIdOrderByLoggedAtDesc(Long userId);
+    List<SymptomEntry> findByUserIdAndSymptomNameContainingIgnoreCase(
+            Long userId, String keyword);
+}
+
+@Repository
+public interface VitalRepository extends JpaRepository<VitalEntry, Long> {
+    List<VitalEntry> findByUserIdOrderByMeasuredAtDesc(Long userId);
+
+    @Query("SELECT v FROM VitalEntry v WHERE v.user.id = :userId " +
+           "AND v.measuredAt >= :since ORDER BY v.measuredAt DESC")
+    List<VitalEntry> findRecentVitals(Long userId, LocalDateTime since);
+}
+
+@Repository
+public interface MoodRepository extends JpaRepository<MoodEntry, Long> {
+    List<MoodEntry> findByUserIdOrderByLoggedAtDesc(Long userId);
+}
+
+@Repository
+public interface JournalRepository extends JpaRepository<JournalEntry, Long> {
+    List<JournalEntry> findByUserIdOrderByCreatedAtDesc(Long userId);
+    List<JournalEntry> findByUserIdAndIsSharedWithDoctorTrue(Long userId);
+}
+
+
+// ==================== DTOs ====================
+
+package com.healthstorylines.dto;
+
+import lombok.*;
+import java.time.LocalDateTime;
+
+@Data @Builder @NoArgsConstructor @AllArgsConstructor
+public class RegisterRequest {
+    private String fullName;
+    private String email;
+    private String password;
+    private String condition;
+}
+
+@Data @Builder @NoArgsConstructor @AllArgsConstructor
+public class LoginRequest {
+    private String email;
+    private String password;
+}
+
+@Data @Builder @NoArgsConstructor @AllArgsConstructor
+public class AuthResponse {
+    private String token;
+    private String fullName;
+    private String email;
+}
+
+@Data @Builder @NoArgsConstructor @AllArgsConstructor
+public class MedicationRequest {
+    private String medicationName;
+    private String dosage;
+    private String frequency;
+    private Boolean taken;
+    private LocalDateTime takenAt;
+    private String notes;
+}
+
+@Data @Builder @NoArgsConstructor @AllArgsConstructor
+public class SymptomRequest {
+    private String symptomName;
+    private Integer severity;
+    private String notes;
+}
+
+@Data @Builder @NoArgsConstructor @AllArgsConstructor
+public class VitalRequest {
+    private Double weight;
+    private Integer systolic;
+    private Integer diastolic;
+    private Integer heartRate;
+    private Double bloodSugar;
+    private Double oxygenSaturation;
+    private Double temperature;
+    private Integer sleepHours;
+    private Integer stepsCount;
+    private String deviceSource;
+}
+
+@Data @Builder @NoArgsConstructor @AllArgsConstructor
+public class MoodRequest {
+    private String mood;   // maps to MoodEntry.MoodLevel
+    private String triggers;
+    private String notes;
+}
+
+@Data @Builder @NoArgsConstructor @AllArgsConstructor
+public class JournalRequest {
+    private String title;
+    private String content;
+    private Boolean isSharedWithDoctor;
+}
+
+@Data @Builder @NoArgsConstructor @AllArgsConstructor
+public class HealthSummaryResponse {
+    private String patientName;
+    private String condition;
+    private Object recentVitals;
+    private Object recentSymptoms;
+    private Object recentMedications;
+    private Object recentMoods;
+}
+
+
+// ==================== SERVICES ====================
+
+package com.healthstorylines.service;
+
+import com.healthstorylines.dto.*;
+import com.healthstorylines.model.*;
+import com.healthstorylines.repository.*;
+import com.healthstorylines.security.JwtUtil;
+import lombok.RequiredArgsConstructor;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import java.time.LocalDateTime;
+import java.util.List;
+
+// ---------- AuthService ----------
+@Service
+@RequiredArgsConstructor
+public class AuthService {
+
+    private final UserRepository userRepo;
+    private final PasswordEncoder passwordEncoder;
+    private final JwtUtil jwtUtil;
+
+    @Transactional
+    public AuthResponse register(RegisterRequest req) {
+        if (userRepo.existsByEmail(req.getEmail()))
+            throw new RuntimeException("Email already registered.");
+
+        User user = User.builder()
+                .fullName(req.getFullName())
+                .email(req.getEmail())
+                .passwordHash(passwordEncoder.encode(req.getPassword()))
+                .condition(req.getCondition())
+                .build();
+        userRepo.save(user);
+
+        String token = jwtUtil.generateToken(user.getEmail());
+        return new AuthResponse(token, user.getFullName(), user.getEmail());
+    }
+
+    public AuthResponse login(LoginRequest req) {
+        User user = userRepo.findByEmail(req.getEmail())
+                .orElseThrow(() -> new RuntimeException("Invalid credentials."));
+
+        if (!passwordEncoder.matches(req.getPassword(), user.getPasswordHash()))
+            throw new RuntimeException("Invalid credentials.");
+
+        String token = jwtUtil.generateToken(user.getEmail());
+        return new AuthResponse(token, user.getFullName(), user.getEmail());
+    }
+}
+
+
+// ---------- MedicationService ----------
+@Service
+@RequiredArgsConstructor
+public class MedicationService {
+
+    private final MedicationRepository medRepo;
+    private final UserRepository userRepo;
+
+    @Transactional
+    public MedicationEntry logMedication(Long userId, MedicationRequest req) {
+        User user = userRepo.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found."));
+        MedicationEntry entry = MedicationEntry.builder()
+                .user(user)
+                .medicationName(req.getMedicationName())
+                .dosage(req.getDosage())
+                .frequency(req.getFrequency())
+                .taken(req.getTaken())
+                .takenAt(req.getTakenAt())
+                .notes(req.getNotes())
+                .build();
+        return medRepo.save(entry);
+    }
+
+    public List<MedicationEntry> getMedications(Long userId) {
+        return medRepo.findByUserIdOrderByLoggedAtDesc(userId);
+    }
+}
+
+
+// ---------- SymptomService ----------
+@Service
+@RequiredArgsConstructor
+public class SymptomService {
+
+    private final SymptomRepository symptomRepo;
+    private final UserRepository userRepo;
+
+    @Transactional
+    public SymptomEntry logSymptom(Long userId, SymptomRequest req) {
+        User user = userRepo.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found."));
+        SymptomEntry entry = SymptomEntry.builder()
+                .user(user)
+                .symptomName(req.getSymptomName())
+                .severity(req.getSeverity())
+                .notes(req.getNotes())
+                .build();
+        return symptomRepo.save(entry);
+    }
+
+    public List<SymptomEntry> getSymptoms(Long userId) {
+        return symptomRepo.findByUserIdOrderByLoggedAtDesc(userId);
+    }
+}
+
+
+// ---------- VitalService ----------
+@Service
+@RequiredArgsConstructor
+public class VitalService {
+
+    private final VitalRepository vitalRepo;
+    private final UserRepository userRepo;
+
+    @Transactional
+    public VitalEntry logVitals(Long userId, VitalRequest req) {
+        User user = userRepo.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found."));
+        VitalEntry entry = VitalEntry.builder()
+                .user(user)
+                .weight(req.getWeight())
+                .systolic(req.getSystolic())
+                .diastolic(req.getDiastolic())
+                .heartRate(req.getHeartRate())
+                .bloodSugar(req.getBloodSugar())
+                .oxygenSaturation(req.getOxygenSaturation())
+                .temperature(req.getTemperature())
+                .sleepHours(req.getSleepHours())
+                .stepsCount(req.getStepsCount())
+                .deviceSource(req.getDeviceSource())
+                .build();
+        return vitalRepo.save(entry);
+    }
+
+    public List<VitalEntry> getRecentVitals(Long userId, int days) {
+        LocalDateTime since = LocalDateTime.now().minusDays(days);
+        return vitalRepo.findRecentVitals(userId, since);
+    }
+}
+
+
+// ---------- MoodService ----------
+@Service
+@RequiredArgsConstructor
+public class MoodService {
+
+    private final MoodRepository moodRepo;
+    private final UserRepository userRepo;
+
+    @Transactional
+    public MoodEntry logMood(Long userId, MoodRequest req) {
+        User user = userRepo.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found."));
+        MoodEntry entry = MoodEntry.builder()
+                .user(user)
+                .mood(MoodEntry.MoodLevel.valueOf(req.getMood()))
+                .triggers(req.getTriggers())
+                .notes(req.getNotes())
+                .build();
+        return moodRepo.save(entry);
+    }
+
+    public List<MoodEntry> getMoods(Long userId) {
+        return moodRepo.findByUserIdOrderByLoggedAtDesc(userId);
+    }
+}
+
+
+// ---------- JournalService ----------
+@Service
+@RequiredArgsConstructor
+public class JournalService {
+
+    private final JournalRepository journalRepo;
+    private final UserRepository userRepo;
+
+    @Transactional
+    public JournalEntry createEntry(Long userId, JournalRequest req) {
+        User user = userRepo.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found."));
+        JournalEntry entry = JournalEntry.builder()
+                .user(user)
+                .title(req.getTitle())
+                .content(req.getContent())
+                .isSharedWithDoctor(
+                        req.getIsSharedWithDoctor() != null
+                        ? req.getIsSharedWithDoctor() : false)
+                .build();
+        return journalRepo.save(entry);
+    }
+
+    public List<JournalEntry> getEntries(Long userId) {
+        return journalRepo.findByUserIdOrderByCreatedAtDesc(userId);
+    }
+
+    public List<JournalEntry> getSharedWithDoctor(Long userId) {
+        return journalRepo.findByUserIdAndIsSharedWithDoctorTrue(userId);
+    }
+}
+
+
+// ---------- HealthSummaryService ----------
+@Service
+@RequiredArgsConstructor
+public class HealthSummaryService {
+
+    private final UserRepository userRepo;
+    private final VitalService vitalService;
+    private final SymptomService symptomService;
+    private final MedicationService medicationService;
+    private final MoodService moodService;
+
+    public HealthSummaryResponse generateSummary(Long userId) {
+        User user = userRepo.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found."));
+
+        return HealthSummaryResponse.builder()
+                .patientName(user.getFullName())
+                .condition(user.getCondition())
+                .recentVitals(vitalService.getRecentVitals(userId, 7))
+                .recentSymptoms(symptomService.getSymptoms(userId))
+                .recentMedications(medicationService.getMedications(userId))
+                .recentMoods(moodService.getMoods(userId))
+                .build();
+    }
+}
+
+
+// ==================== CONTROLLERS ====================
+
+package com.healthstorylines.controller;
+
+import com.healthstorylines.dto.*;
+import com.healthstorylines.service.*;
+import com.healthstorylines.security.CurrentUser;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.*;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.*;
+import jakarta.validation.Valid;
+
+// ---------- AuthController ----------
+@RestController
+@RequestMapping("/api/v1/auth")
+@RequiredArgsConstructor
+public class AuthController {
+
+    private final AuthService authService;
+
+    @PostMapping("/register")
+    public ResponseEntity<AuthResponse> register(@Valid @RequestBody RegisterRequest req) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(authService.register(req));
+    }
+
+    @PostMapping("/login")
+    public ResponseEntity<AuthResponse> login(@Valid @RequestBody LoginRequest req) {
+        return ResponseEntity.ok(authService.login(req));
+    }
+}
+
+
+// ---------- MedicationController ----------
+@RestController
+@RequestMapping("/api/v1/medications")
+@RequiredArgsConstructor
+@PreAuthorize("isAuthenticated()")
+public class MedicationController {
+
+    private final MedicationService medicationService;
+
+    @PostMapping
+    public ResponseEntity<?> log(@CurrentUser Long userId,
+                                 @Valid @RequestBody MedicationRequest req) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(medicationService.logMedication(userId, req));
+    }
+
+    @GetMapping
+    public ResponseEntity<?> list(@CurrentUser Long userId) {
+        return ResponseEntity.ok(medicationService.getMedications(userId));
+    }
+}
+
+
+// ---------- SymptomController ----------
+@RestController
+@RequestMapping("/api/v1/symptoms")
+@RequiredArgsConstructor
+@PreAuthorize("isAuthenticated()")
+public class SymptomController {
+
+    private final SymptomService symptomService;
+
+    @PostMapping
+    public ResponseEntity<?> log(@CurrentUser Long userId,
+                                 @Valid @RequestBody SymptomRequest req) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(symptomService.logSymptom(userId, req));
+    }
+
+    @GetMapping
+    public ResponseEntity<?> list(@CurrentUser Long userId) {
+        return ResponseEntity.ok(symptomService.getSymptoms(userId));
+    }
+}
+
+
+// ---------- VitalController ----------
+@RestController
+@RequestMapping("/api/v1/vitals")
+@RequiredArgsConstructor
+@PreAuthorize("isAuthenticated()")
+public class VitalController {
+
+    private final VitalService vitalService;
+
+    @PostMapping
+    public ResponseEntity<?> log(@CurrentUser Long userId,
+                                 @Valid @RequestBody VitalRequest req) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(vitalService.logVitals(userId, req));
+    }
+
+    @GetMapping
+    public ResponseEntity<?> list(@CurrentUser Long userId,
+                                  @RequestParam(defaultValue = "7") int days) {
+        return ResponseEntity.ok(vitalService.getRecentVitals(userId, days));
+    }
+}
+
+
+// ---------- MoodController ----------
+@RestController
+@RequestMapping("/api/v1/moods")
+@RequiredArgsConstructor
+@PreAuthorize("isAuthenticated()")
+public class MoodController {
+
+    private final MoodService moodService;
+
+    @PostMapping
+    public ResponseEntity<?> log(@CurrentUser Long userId,
+                                 @Valid @RequestBody MoodRequest req) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(moodService.logMood(userId, req));
+    }
+
+    @GetMapping
+    public ResponseEntity<?> list(@CurrentUser Long userId) {
+        return ResponseEntity.ok(moodService.getMoods(userId));
+    }
+}
+
+
+// ---------- JournalController ----------
+@RestController
+@RequestMapping("/api/v1/journal")
+@RequiredArgsConstructor
+@PreAuthorize("isAuthenticated()")
+public class JournalController {
+
+    private final JournalService journalService;
+
+    @PostMapping
+    public ResponseEntity<?> create(@CurrentUser Long userId,
+                                    @Valid @RequestBody JournalRequest req) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(journalService.createEntry(userId, req));
+    }
+
+    @GetMapping
+    public ResponseEntity<?> list(@CurrentUser Long userId) {
+        return ResponseEntity.ok(journalService.getEntries(userId));
+    }
+
+    @GetMapping("/shared")
+    public ResponseEntity<?> sharedWithDoctor(@CurrentUser Long userId) {
+        return ResponseEntity.ok(journalService.getSharedWithDoctor(userId));
+    }
+}
+
+
+// ---------- HealthSummaryController ----------
+@RestController
+@RequestMapping("/api/v1/summary")
+@RequiredArgsConstructor
+@PreAuthorize("isAuthenticated()")
+public class HealthSummaryController {
+
+    private final HealthSummaryService summaryService;
+
+    @GetMapping
+    public ResponseEntity<HealthSummaryResponse> getSummary(@CurrentUser Long userId) {
+        return ResponseEntity.ok(summaryService.generateSummary(userId));
+    }
+}
+
+
+// ==================== SECURITY (JWT) ====================
+
+package com.healthstorylines.security;
+
+import io.jsonwebtoken.*;
+import io.jsonwebtoken.security.Keys;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+import java.security.Key;
+import java.util.Date;
+
+@Component
+public class JwtUtil {
+
+    @Value("${jwt.secret}")
+    private String secret;
+
+    @Value("${jwt.expiration-ms:86400000}")  // 24h default
+    private long expirationMs;
+
+    private Key signingKey() {
+        return Keys.hmacShaKeyFor(secret.getBytes());
+    }
+
+    public String generateToken(String email) {
+        return Jwts.builder()
+                .setSubject(email)
+                .setIssuedAt(new Date())
+                .setExpiration(new Date(System.currentTimeMillis() + expirationMs))
+                .signWith(signingKey(), SignatureAlgorithm.HS256)
+                .compact();
+    }
+
+    public String extractEmail(String token) {
+        return Jwts.parserBuilder()
+                .setSigningKey(signingKey()).build()
+                .parseClaimsJws(token)
+                .getBody()
+                .getSubject();
+    }
+
+    public boolean isTokenValid(String token) {
+        try {
+            Jwts.parserBuilder().setSigningKey(signingKey())
+                    .build().parseClaimsJws(token);
+            return true;
+        } catch (JwtException e) {
+            return false;
+        }
+    }
+}
+
+
+// ==================== application.properties ====================
+/*
+spring.datasource.url=jdbc:postgresql://localhost:5432/healthstorylines
+spring.datasource.username=hs_user
+spring.datasource.password=hs_password
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.show-sql=false
+
+jwt.secret=YourSuperSecretKeyThatIsAtLeast256BitsLong!!
+jwt.expiration-ms=86400000
+
+server.port=8080
+*/
+
+
+// ==================== API ENDPOINT SUMMARY ====================
+/*
+ POST  /api/v1/auth/register          → register new user
+ POST  /api/v1/auth/login             → login & get JWT
+
+ POST  /api/v1/medications            → log medication intake
+ GET   /api/v1/medications            → list all medication entries
+
+ POST  /api/v1/symptoms               → log symptom with severity
+ GET   /api/v1/symptoms               → list all symptoms
+
+ POST  /api/v1/vitals                 → log vitals (BP, weight, HR, etc.)
+ GET   /api/v1/vitals?days=7          → vitals for past N days
+
+ POST  /api/v1/moods                  → log daily mood
+ GET   /api/v1/moods                  → list mood entries
+
+ POST  /api/v1/journal                → create journal entry
+ GET   /api/v1/journal                → list journal entries
+ GET   /api/v1/journal/shared         → entries shared with doctor
+
+ GET   /api/v1/summary                → full health summary report
+*/
