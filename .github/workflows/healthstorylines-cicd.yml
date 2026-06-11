@@ -1,0 +1,391 @@
+# ============================================================
+#  Covers: Build → Test → Code Quality → Docker → Deploy
+# ============================================================
+
+name: Health Storylines CI/CD
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:   # allow manual trigger
+
+# ── Global environment variables ────────────────────────────
+env:
+  JAVA_VERSION: '17'
+  DOCKER_IMAGE: ${{ secrets.DOCKER_HUB_USERNAME }}/healthstorylines-backend
+  APP_PORT: 8080
+
+# ============================================================
+# JOB 1 — BUILD & TEST
+# ============================================================
+jobs:
+  build-and-test:
+    name: 🔨 Build & Test
+    runs-on: ubuntu-latest
+
+    # Spin up a PostgreSQL service container for integration tests
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: healthstorylines_test
+          POSTGRES_USER: hs_user
+          POSTGRES_PASSWORD: hs_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      # ── Checkout ──────────────────────────────────────────
+      - name: ⬇️ Checkout source
+        uses: actions/checkout@v4
+
+      # ── Java setup ────────────────────────────────────────
+      - name: ☕ Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      # ── Build & unit tests ────────────────────────────────
+      - name: 🔨 Build with Maven (skip integration tests)
+        run: mvn clean package -DskipITs --no-transfer-progress
+
+      # ── Integration tests (against real Postgres) ─────────
+      - name: 🧪 Run integration tests
+        env:
+          SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/healthstorylines_test
+          SPRING_DATASOURCE_USERNAME: hs_user
+          SPRING_DATASOURCE_PASSWORD: hs_password
+          JWT_SECRET: CI_Test_Secret_Key_At_Least_256_Bits_Long!!
+        run: mvn verify -P integration-tests --no-transfer-progress
+
+      # ── Test report ───────────────────────────────────────
+      - name: 📊 Publish test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: JUnit Test Results
+          path: target/surefire-reports/*.xml
+          reporter: java-junit
+
+      # ── Upload coverage report ────────────────────────────
+      - name: 📈 Upload JaCoCo coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: target/site/jacoco/
+          retention-days: 7
+
+      # ── Upload JAR for next jobs ──────────────────────────
+      - name: 📦 Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: target/*.jar
+          retention-days: 1
+
+
+# ============================================================
+# JOB 2 — CODE QUALITY (SonarCloud + Dependency Check)
+# ============================================================
+  code-quality:
+    name: 🔍 Code Quality
+    runs-on: ubuntu-latest
+    needs: build-and-test
+
+    steps:
+      - name: ⬇️ Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history for SonarCloud blame info
+
+      - name: ☕ Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      # ── SonarCloud analysis ───────────────────────────────
+      - name: 🔎 SonarCloud scan
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          mvn sonar:sonar \
+            -Dsonar.projectKey=healthstorylines-backend \
+            -Dsonar.organization=${{ secrets.SONAR_ORG }} \
+            -Dsonar.host.url=https://sonarcloud.io \
+            --no-transfer-progress
+
+      # ── OWASP dependency vulnerability check ─────────────
+      - name: 🛡️ OWASP dependency check
+        run: |
+          mvn org.owasp:dependency-check-maven:check \
+            -DfailBuildOnCVSS=7 \
+            --no-transfer-progress
+
+      - name: 📋 Upload dependency check report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-check-report
+          path: target/dependency-check-report.html
+          retention-days: 7
+
+
+# ============================================================
+# JOB 3 — DOCKER BUILD & PUSH
+# ============================================================
+  docker:
+    name: 🐳 Docker Build & Push
+    runs-on: ubuntu-latest
+    needs: code-quality
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+
+    steps:
+      - name: ⬇️ Checkout source
+        uses: actions/checkout@v4
+
+      # ── Download JAR from build job ───────────────────────
+      - name: 📦 Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: app-jar
+          path: target/
+
+      # ── Docker metadata (tags & labels) ───────────────────
+      - name: 🏷️ Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      # ── Login to Docker Hub ───────────────────────────────
+      - name: 🔐 Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      # ── Build and push multi-platform image ───────────────
+      - name: 🐳 Build & push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── Scan image for vulnerabilities ───────────────────
+      - name: 🔒 Trivy image vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_IMAGE }}:latest
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+
+# ============================================================
+# JOB 4 — DEPLOY TO STAGING
+# ============================================================
+  deploy-staging:
+    name: 🚀 Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: docker
+    if: github.ref == 'refs/heads/develop'
+    environment:
+      name: staging
+      url: https://staging.healthstorylines.com
+
+    steps:
+      - name: ⬇️ Checkout source
+        uses: actions/checkout@v4
+
+      - name: 🚀 Deploy to staging server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script: |
+            cd /opt/healthstorylines
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker image prune -f
+            echo "✅ Staging deployment complete: $(date)"
+
+      - name: 🏥 Health check — staging
+        run: |
+          sleep 20
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            https://staging.healthstorylines.com/actuator/health)
+          if [ "$STATUS" != "200" ]; then
+            echo "❌ Health check failed: HTTP $STATUS"
+            exit 1
+          fi
+          echo "✅ Staging is healthy (HTTP $STATUS)"
+
+      - name: 🔔 Notify Slack — staging deployed
+        if: always()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "${{ job.status == 'success' && '✅' || '❌' }} *Staging Deploy* `${{ github.sha }}` — ${{ job.status }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+
+# ============================================================
+# JOB 5 — DEPLOY TO PRODUCTION
+# ============================================================
+  deploy-production:
+    name: 🌐 Deploy to Production
+    runs-on: ubuntu-latest
+    needs: docker
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: https://api.healthstorylines.com
+
+    steps:
+      - name: ⬇️ Checkout source
+        uses: actions/checkout@v4
+
+      - name: 🌐 Deploy to production server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          script: |
+            cd /opt/healthstorylines
+            # Rolling update — zero downtime
+            docker compose pull
+            docker compose up -d --no-deps --scale app=2 app
+            sleep 15
+            docker compose up -d --no-deps --scale app=1 app
+            docker image prune -f
+            echo "✅ Production deployment complete: $(date)"
+
+      - name: 🏥 Health check — production
+        run: |
+          sleep 20
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            https://api.healthstorylines.com/actuator/health)
+          if [ "$STATUS" != "200" ]; then
+            echo "❌ Production health check failed: HTTP $STATUS"
+            exit 1
+          fi
+          echo "✅ Production is healthy (HTTP $STATUS)"
+
+      - name: 🏷️ Create GitHub release tag
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = `v${new Date().toISOString().slice(0,10)}-${context.sha.slice(0,7)}`;
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `refs/tags/${tag}`,
+              sha: context.sha
+            });
+            console.log(`Tagged release: ${tag}`);
+
+      - name: 🔔 Notify Slack — production deployed
+        if: always()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "${{ job.status == 'success' && '🚀' || '🔴' }} *Production Deploy* `${{ github.sha }}` — ${{ job.status }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+
+# ============================================================
+# JOB 6 — ROLLBACK (manual trigger only)
+# ============================================================
+  rollback:
+    name: ⏪ Rollback Production
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    environment: production
+
+    steps:
+      - name: ⏪ Rollback to previous Docker image
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          script: |
+            cd /opt/healthstorylines
+            PREV_IMAGE=$(docker images ${{ env.DOCKER_IMAGE }} \
+              --format "{{.Tag}}" | sed -n '2p')
+            echo "Rolling back to: $PREV_IMAGE"
+            docker compose stop app
+            docker tag ${{ env.DOCKER_IMAGE }}:$PREV_IMAGE \
+                        ${{ env.DOCKER_IMAGE }}:rollback
+            DOCKER_TAG=rollback docker compose up -d app
+            echo "✅ Rollback complete: $(date)"
+
+      - name: 🔔 Notify Slack — rollback executed
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "⏪ *Production Rollback* triggered by `${{ github.actor }}`\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+
+# ============================================================
+# DOCKERFILE  (place in repo root)
+# ============================================================
+# FROM eclipse-temurin:17-jre-alpine
+# WORKDIR /app
+# COPY target/*.jar app.jar
+# EXPOSE 8080
+# ENTRYPOINT ["java", "-jar", "app.jar"]
+
+
+# ============================================================
+# REQUIRED GITHUB SECRETS
+# ============================================================
+# DOCKER_HUB_USERNAME     — Docker Hub username
+# DOCKER_HUB_TOKEN        — Docker Hub access token
+# SONAR_TOKEN             — SonarCloud auth token
+# SONAR_ORG               — SonarCloud organisation key
+# STAGING_HOST            — Staging server IP / hostname
+# STAGING_USER            — SSH username for staging
+# STAGING_SSH_KEY         — Private SSH key for staging
+# PROD_HOST               — Production server IP / hostname
+# PROD_USER               — SSH username for production
+# PROD_SSH_KEY            — Private SSH key for production
+# SLACK_WEBHOOK_URL       — Slack incoming webhook URL
