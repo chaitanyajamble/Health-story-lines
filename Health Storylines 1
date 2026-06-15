@@ -1,0 +1,571 @@
+package com.healthstorylines;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cache.annotation.EnableCaching;
+import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.annotation.EnableScheduling;
+
+/**
+ * Health Storylines™ — patient-centric self-care platform.
+ *
+ * Architecture: Spring Boot 3 · Java 21 · Redis · JWT
+ * REST API follows FHIR R4 conventions for health data interoperability.
+ */
+@SpringBootApplication
+@EnableCaching
+@EnableAsync
+@EnableScheduling
+public class HealthStorylinesApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(HealthStorylinesApplication.class, args);
+    }
+}
+package com.healthstorylines.domain.enums;
+
+/**
+ * User roles aligned with Health Storylines™ personas.
+ */
+public enum Role {
+    /** Standard app user / patient */
+    PATIENT,
+    /** Family member or friend invited by patient */
+    CAREGIVER,
+    /** Physician or nurse with shared-report access */
+    CLINICIAN,
+    /** Research team member for RWE / DCT */
+    RESEARCHER,
+    /** Platform administrator */
+    ADMIN
+}
+package com.healthstorylines.domain.enums;
+
+/**
+ * Standardised five-point mood scale used across trackers and reports.
+ */
+public enum MoodLevel {
+    VERY_BAD(1, "Very Bad"),
+    BAD(2, "Bad"),
+    NEUTRAL(3, "Neutral"),
+    GOOD(4, "Good"),
+    VERY_GOOD(5, "Very Good");
+
+    private final int numericValue;
+    private final String label;
+
+    MoodLevel(int numericValue, String label) {
+        this.numericValue = numericValue;
+        this.label = label;
+    }
+
+    public int getNumericValue() { return numericValue; }
+    public String getLabel()     { return label; }
+}
+package com.healthstorylines.domain.enums;
+
+public enum SeverityLevel {
+    NONE(0),
+    MILD(1),
+    MODERATE(2),
+    SEVERE(3),
+    VERY_SEVERE(4);
+
+    private final int numericValue;
+
+    SeverityLevel(int numericValue) { this.numericValue = numericValue; }
+
+    public int getNumericValue() { return numericValue; }
+}
+package com.healthstorylines.domain.entity;
+
+import jakarta.persistence.*;
+import lombok.Getter;
+import lombok.Setter;
+import org.springframework.data.annotation.CreatedBy;
+import org.springframework.data.annotation.CreatedDate;
+import org.springframework.data.annotation.LastModifiedBy;
+import org.springframework.data.annotation.LastModifiedDate;
+import org.springframework.data.jpa.domain.support.AuditingEntityListener;
+
+import java.time.Instant;
+import java.util.UUID;
+
+/**
+ * Common audit fields inherited by every persistent entity.
+ * Uses Spring Data JPA auditing — requires @EnableJpaAuditing on a config class.
+ */
+@Getter
+@Setter
+@MappedSuperclass
+@EntityListeners(AuditingEntityListener.class)
+public abstract class BaseEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    @Column(updatable = false, nullable = false)
+    private UUID id;
+
+    @CreatedDate
+    @Column(nullable = false, updatable = false)
+    private Instant createdAt;
+
+    @LastModifiedDate
+    @Column(nullable = false)
+    private Instant updatedAt;
+
+    @CreatedBy
+    @Column(updatable = false, length = 100)
+    private String createdBy;
+
+    @LastModifiedBy
+    @Column(length = 100)
+    private String updatedBy;
+
+    @Version
+    private Long version;   // Optimistic locking
+}
+package com.healthstorylines.domain.entity;
+
+import com.healthstorylines.domain.enums.Role;
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.time.LocalDate;
+import java.util.HashSet;
+import java.util.Set;
+
+/**
+ * Platform user — may be a patient, caregiver, clinician, or researcher.
+ */
+@Entity
+@Table(name = "users",
+        uniqueConstraints = @UniqueConstraint(name = "uk_users_email", columnNames = "email"))
+@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class User extends BaseEntity {
+
+    @Column(nullable = false, length = 100)
+    private String firstName;
+
+    @Column(nullable = false, length = 100)
+    private String lastName;
+
+    @Column(nullable = false, length = 255)
+    private String email;
+
+    @Column(nullable = false)
+    private String passwordHash;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    @Builder.Default
+    private Role role = Role.PATIENT;
+
+    private LocalDate dateOfBirth;
+
+    @Column(length = 10)
+    private String gender;
+
+    /** FHIR Patient resource ID for interoperability */
+    @Column(length = 100)
+    private String fhirPatientId;
+
+    @Column(nullable = false)
+    @Builder.Default
+    private boolean enabled = true;
+
+    @Column(nullable = false)
+    @Builder.Default
+    private boolean emailVerified = false;
+
+    /** Caregivers / companions who have been invited */
+    @ManyToMany
+    @JoinTable(name = "user_caregivers",
+            joinColumns = @JoinColumn(name = "patient_id"),
+            inverseJoinColumns = @JoinColumn(name = "caregiver_id"))
+    @Builder.Default
+    private Set<User> caregivers = new HashSet<>();
+
+    // ── Convenience ──────────────────────────────────────────────
+
+    public String getFullName() {
+        return firstName + " " + lastName;
+    }
+}
+package com.healthstorylines.domain.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * A medication in the patient's care plan.
+ * One patient → many medications; each medication can have many tracker entries.
+ */
+@Entity
+@Table(name = "medications")
+@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class Medication extends BaseEntity {
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
+    @Column(nullable = false, length = 200)
+    private String name;
+
+    @Column(length = 100)
+    private String dosage;              // e.g. "10 mg"
+
+    @Column(length = 100)
+    private String frequency;           // e.g. "Twice daily"
+
+    @Column(length = 100)
+    private String route;               // e.g. "Oral", "Subcutaneous"
+
+    private LocalDate startDate;
+    private LocalDate endDate;
+
+    @Column(columnDefinition = "TEXT")
+    private String instructions;
+
+    /** RxNorm concept unique identifier for interoperability */
+    @Column(length = 20)
+    private String rxNormCode;
+
+    @Column(nullable = false)
+    @Builder.Default
+    private boolean active = true;
+
+    @OneToMany(mappedBy = "medication", cascade = CascadeType.ALL, orphanRemoval = true)
+    @Builder.Default
+    private List<MedicationLog> logs = new ArrayList<>();
+}
+package com.healthstorylines.domain.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.time.Instant;
+
+/**
+ * Records each time a patient marks a dose as taken, missed, or skipped.
+ */
+@Entity
+@Table(name = "medication_logs")
+@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class MedicationLog extends BaseEntity {
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "medication_id", nullable = false)
+    private Medication medication;
+
+    @Column(nullable = false)
+    private Instant scheduledAt;
+
+    private Instant takenAt;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    @Builder.Default
+    private DoseStatus status = DoseStatus.PENDING;
+
+    @Column(columnDefinition = "TEXT")
+    private String notes;
+
+    public enum DoseStatus { PENDING, TAKEN, MISSED, SKIPPED }
+}
+package com.healthstorylines.domain.entity;
+
+import com.healthstorylines.domain.enums.SeverityLevel;
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * One symptom-tracking event logged by the patient.
+ * Supports multiple symptoms per entry (e.g. headache + fatigue at same time).
+ */
+@Entity
+@Table(name = "symptom_entries")
+@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class SymptomEntry extends BaseEntity {
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
+    @Column(nullable = false)
+    private Instant recordedAt;
+
+    @ElementCollection
+    @CollectionTable(name = "symptom_details",
+            joinColumns = @JoinColumn(name = "entry_id"))
+    @Builder.Default
+    private List<SymptomDetail> symptoms = new ArrayList<>();
+
+    @Column(columnDefinition = "TEXT")
+    private String notes;
+
+    // ── Embeddable ────────────────────────────────────────────────
+    @Embeddable
+    @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+    public static class SymptomDetail {
+        @Column(nullable = false, length = 200)
+        private String name;               // e.g. "Headache", "Fatigue"
+
+        @Enumerated(EnumType.STRING)
+        @Column(nullable = false, length = 20)
+        private SeverityLevel severity;
+
+        /** SNOMED-CT code for clinical interoperability */
+        @Column(length = 20)
+        private String snomedCode;
+    }
+}
+package com.healthstorylines.domain.entity;
+
+import com.healthstorylines.domain.enums.MoodLevel;
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Daily mood check-in.
+ */
+@Entity
+@Table(name = "mood_entries")
+@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class MoodEntry extends BaseEntity {
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
+    @Column(nullable = false)
+    private Instant recordedAt;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    private MoodLevel mood;
+
+    @ElementCollection
+    @CollectionTable(name = "mood_tags",
+            joinColumns = @JoinColumn(name = "entry_id"))
+    @Column(name = "tag", length = 100)
+    @Builder.Default
+    private List<String> tags = new ArrayList<>();   // e.g. "anxious", "energetic"
+
+    @Column(columnDefinition = "TEXT")
+    private String notes;
+}
+package com.healthstorylines.domain.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.time.Instant;
+
+/**
+ * Daily vitals snapshot — blood pressure, weight, heart rate, SpO2, temperature, sleep.
+ * Sourced from manual entry or synced from 300+ connected health devices.
+ */
+@Entity
+@Table(name = "vitals_entries")
+@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class VitalsEntry extends BaseEntity {
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
+    @Column(nullable = false)
+    private Instant recordedAt;
+
+    // ── Blood Pressure ─────────────────────────────────
+    private Integer systolicBp;     // mmHg
+    private Integer diastolicBp;    // mmHg
+
+    // ── Heart Rate ─────────────────────────────────────
+    private Integer heartRate;      // bpm
+
+    // ── Weight ─────────────────────────────────────────
+    private Double weightKg;
+
+    // ── Oxygen Saturation ──────────────────────────────
+    private Double spo2;            // %
+
+    // ── Temperature ────────────────────────────────────
+    private Double temperatureCelsius;
+
+    // ── Sleep ──────────────────────────────────────────
+    private Integer sleepMinutes;
+    private String  sleepQuality;   // POOR / FAIR / GOOD / EXCELLENT
+
+    // ── Steps / Exercise ───────────────────────────────
+    private Integer stepCount;
+    private Integer activeMinutes;
+
+    // ── Glucose ────────────────────────────────────────
+    private Double glucoseMgDl;
+
+    /** Source device identifier (e.g. "iHealth", "Qardio", "AppleHealthKit") */
+    @Column(length = 100)
+    private String deviceSource;
+
+    @Column(columnDefinition = "TEXT")
+    private String notes;
+}
+package com.healthstorylines.domain.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Free-text health journal — the "voice" of the patient's story.
+ */
+@Entity
+@Table(name = "journal_entries")
+@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class JournalEntry extends BaseEntity {
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
+    @Column(nullable = false, length = 300)
+    private String title;
+
+    @Column(nullable = false, columnDefinition = "TEXT")
+    private String body;
+
+    @Column(nullable = false)
+    private Instant entryDate;
+
+    @ElementCollection
+    @CollectionTable(name = "journal_tags",
+            joinColumns = @JoinColumn(name = "entry_id"))
+    @Column(name = "tag", length = 100)
+    @Builder.Default
+    private List<String> tags = new ArrayList<>();
+
+    @Column(nullable = false)
+    @Builder.Default
+    private boolean sharedWithCareTeam = false;
+}
+package com.healthstorylines.domain.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.time.Instant;
+
+/**
+ * Appointment calendar event — reminds the patient and logs follow-up notes.
+ */
+@Entity
+@Table(name = "appointments")
+@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class Appointment extends BaseEntity {
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
+    @Column(nullable = false, length = 200)
+    private String title;
+
+    @Column(length = 200)
+    private String providerName;
+
+    @Column(length = 200)
+    private String location;
+
+    @Column(nullable = false)
+    private Instant scheduledAt;
+
+    private Instant reminderAt;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    @Builder.Default
+    private AppointmentStatus status = AppointmentStatus.SCHEDULED;
+
+    @Column(columnDefinition = "TEXT")
+    private String prepNotes;       // pre-appointment notes
+
+    @Column(columnDefinition = "TEXT")
+    private String followUpNotes;   // post-appointment notes
+
+    public enum AppointmentStatus { SCHEDULED, COMPLETED, CANCELLED, MISSED }
+}
+package com.healthstorylines.domain.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.time.Instant;
+import java.time.LocalDate;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.UUID;
+
+/**
+ * A generated health summary sharable with clinicians or caregivers.
+ * Covers a date range across all tracked domains.
+ */
+@Entity
+@Table(name = "health_reports")
+@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class HealthReport extends BaseEntity {
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
+    @Column(nullable = false)
+    private LocalDate fromDate;
+
+    @Column(nullable = false)
+    private LocalDate toDate;
+
+    /** Signed URL or storage key for the generated PDF */
+    @Column(length = 1000)
+    private String reportUrl;
+
+    @Column(nullable = false)
+    private Instant generatedAt;
+
+    /** Token used to grant time-limited access to recipients */
+    @Column(length = 100, unique = true)
+    private String shareToken;
+
+    private Instant shareTokenExpiresAt;
+
+    /** Emails of recipients this report was explicitly shared with */
+    @ElementCollection
+    @CollectionTable(name = "report_recipients",
+            joinColumns = @JoinColumn(name = "report_id"))
+    @Column(name = "recipient_email", length = 255)
+    @Builder.Default
+    private Set<String> sharedWithEmails = new HashSet<>();
+
+    public void generateShareToken() {
+        this.shareToken = UUID.randomUUID().toString();
+        this.shareTokenExpiresAt = Instant.now().plusSeconds(7 * 24 * 3600); // 7 days
+    }
+}
+
