@@ -1,0 +1,260 @@
+
+import hashlib
+import heapq
+import math
+import re
+from collections import Counter, defaultdict
+from datetime import datetime, timedelta
+
+
+# ---------------------------------------------------------------------------
+# 1. MEDICATION ADHERENCE — streak & percentage tracking
+# (core to the "Coach" / Medication Tracker feature)
+# ---------------------------------------------------------------------------
+def calculate_adherence(scheduled_doses: list, taken_doses: set) -> dict:
+    """
+    scheduled_doses: list of datetime objects the med was due.
+    taken_doses: set of datetime objects when it was actually taken.
+    Returns adherence % and current streak.
+    """
+    taken_count = sum(1 for dose in scheduled_doses if dose in taken_doses)
+    adherence_pct = round((taken_count / len(scheduled_doses)) * 100, 1) if scheduled_doses else 0
+
+    # current streak = consecutive taken doses counting back from most recent
+    streak = 0
+    for dose in sorted(scheduled_doses, reverse=True):
+        if dose in taken_doses:
+            streak += 1
+        else:
+            break
+
+    return {"adherence_pct": adherence_pct, "current_streak": streak, "taken": taken_count, "total": len(scheduled_doses)}
+
+
+# ---------------------------------------------------------------------------
+# 2. Z-SCORE ANOMALY DETECTION — flag abnormal vitals readings
+# (e.g. sudden blood pressure or heart rate spike worth alerting on)
+# ---------------------------------------------------------------------------
+def detect_anomalies(readings: list, threshold: float = 2.0) -> list:
+    """readings: list of numeric values (e.g. systolic BP over time)."""
+    n = len(readings)
+    if n < 2:
+        return []
+    mean = sum(readings) / n
+    variance = sum((x - mean) ** 2 for x in readings) / n
+    std_dev = math.sqrt(variance)
+    if std_dev == 0:
+        return []
+
+    anomalies = []
+    for i, value in enumerate(readings):
+        z = (value - mean) / std_dev
+        if abs(z) > threshold:
+            anomalies.append({"index": i, "value": value, "z_score": round(z, 2)})
+    return anomalies
+
+
+# ---------------------------------------------------------------------------
+# 3. MOVING AVERAGE — smooth noisy daily mood/symptom scores for trend charts
+# ---------------------------------------------------------------------------
+def moving_average(values: list, window: int = 7) -> list:
+    result = []
+    for i in range(len(values)):
+        start = max(0, i - window + 1)
+        window_slice = values[start:i + 1]
+        result.append(round(sum(window_slice) / len(window_slice), 2))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 4. PEARSON CORRELATION — does poor sleep correlate with worse mood?
+# ---------------------------------------------------------------------------
+def pearson_correlation(x: list, y: list) -> float:
+    n = len(x)
+    if n != len(y) or n == 0:
+        return 0.0
+    mean_x, mean_y = sum(x) / n, sum(y) / n
+    numerator = sum((x[i] - mean_x) * (y[i] - mean_y) for i in range(n))
+    denom_x = math.sqrt(sum((xi - mean_x) ** 2 for xi in x))
+    denom_y = math.sqrt(sum((yi - mean_y) ** 2 for yi in y))
+    if denom_x == 0 or denom_y == 0:
+        return 0.0
+    return round(numerator / (denom_x * denom_y), 3)
+
+
+# ---------------------------------------------------------------------------
+# 5. PRIORITY QUEUE SCHEDULER — next-up medication/appointment reminders
+# ---------------------------------------------------------------------------
+class ReminderScheduler:
+    def __init__(self):
+        self._heap = []
+        self._counter = 0 # tie-breaker for stable ordering
+
+    def add_reminder(self, when: datetime, message: str, priority: int = 1):
+        # lower priority number = more urgent (e.g. medication > general tip)
+        self._counter += 1
+        heapq.heappush(self._heap, (when, priority, self._counter, message))
+
+    def next_reminder(self):
+        if not self._heap:
+            return None
+        when, priority, _, message = heapq.heappop(self._heap)
+        return {"when": when, "priority": priority, "message": message}
+
+    def upcoming(self, n: int = 5):
+        return [
+            {"when": w, "priority": p, "message": m}
+            for w, p, _, m in sorted(self._heap)[:n]
+        ]
+
+
+# ---------------------------------------------------------------------------
+# 6. SLIDING WINDOW AGGREGATION — weekly health summary report
+# ---------------------------------------------------------------------------
+def weekly_summary(entries: list) -> dict:
+    """entries: list of {'date': datetime, 'mood': int, 'systolic': int, ...}"""
+    buckets = defaultdict(list)
+    for entry in entries:
+        week_start = entry["date"] - timedelta(days=entry["date"].weekday())
+        buckets[week_start.date()].append(entry)
+
+    summary = {}
+    for week, week_entries in sorted(buckets.items()):
+        moods = [e["mood"] for e in week_entries if "mood" in e]
+        vitals = [e["systolic"] for e in week_entries if "systolic" in e]
+        summary[str(week)] = {
+            "entry_count": len(week_entries),
+            "avg_mood": round(sum(moods) / len(moods), 2) if moods else None,
+            "avg_systolic": round(sum(vitals) / len(vitals), 2) if vitals else None,
+        }
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# 7. IDEMPOTENT HASHING / DEDUPLICATION — merging synced wearable data
+# without double-counting the same reading synced twice
+# ---------------------------------------------------------------------------
+def dedupe_key(device_id: str, metric: str, timestamp: datetime) -> str:
+    raw = f"{device_id}|{metric}|{timestamp.isoformat()}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def merge_device_readings(existing: dict, incoming: list) -> dict:
+    """existing: {dedupe_key: reading}. incoming: list of reading dicts."""
+    for reading in incoming:
+        key = dedupe_key(reading["device_id"], reading["metric"], reading["timestamp"])
+        existing.setdefault(key, reading) # no-op if already present (idempotent)
+    return existing
+
+
+# ---------------------------------------------------------------------------
+# 8. K-WAY MERGE — combine sorted time-series streams from multiple devices
+# into one chronological timeline (e.g. Fitbit + Apple Health + manual entry)
+# ---------------------------------------------------------------------------
+def merge_time_series(*streams) -> list:
+    """Each stream is a list of (timestamp, reading) sorted by timestamp."""
+    return list(heapq.merge(*streams, key=lambda item: item[0]))
+
+
+# ---------------------------------------------------------------------------
+# 9. AES FIELD-LEVEL ENCRYPTION — protect PHI (medication, vitals, journal)
+# ---------------------------------------------------------------------------
+def encrypt_field(plaintext: str, key: bytes):
+    try:
+        from Crypto.Cipher import AES
+        from Crypto.Random import get_random_bytes
+    except ImportError:
+        return {"error": "pycryptodome not installed — run: pip install pycryptodome"}
+
+    cipher = AES.new(key, AES.MODE_GCM)
+    ciphertext, tag = cipher.encrypt_and_digest(plaintext.encode())
+    return {"nonce": cipher.nonce, "ciphertext": ciphertext, "tag": tag}
+
+
+def decrypt_field(payload: dict, key: bytes) -> str:
+    try:
+        from Crypto.Cipher import AES
+    except ImportError:
+        return "pycryptodome not installed"
+
+    cipher = AES.new(key, AES.MODE_GCM, nonce=payload["nonce"])
+    plaintext = cipher.decrypt_and_verify(payload["ciphertext"], payload["tag"])
+    return plaintext.decode()
+
+
+# ---------------------------------------------------------------------------
+# 10. KEYWORD FREQUENCY EXTRACTION — lightweight tagging for journal entries
+# (e.g. surfacing recurring themes: "tired", "pain", "anxious")
+# ---------------------------------------------------------------------------
+STOPWORDS = {"the", "a", "an", "is", "was", "and", "to", "of", "in", "i", "it", "my", "on", "for"}
+
+def extract_keywords(text: str, top_n: int = 5) -> list:
+    words = re.findall(r"[a-zA-Z']+", text.lower())
+    filtered = [w for w in words if w not in STOPWORDS and len(w) > 2]
+    return Counter(filtered).most_common(top_n)
+
+
+# ---------------------------------------------------------------------------
+# DEMO
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    print("1. Medication Adherence:")
+    scheduled = [datetime(2026, 7, d, 8, 0) for d in range(1, 8)]
+    taken = {datetime(2026, 7, d, 8, 0) for d in [1, 2, 3, 5, 6, 7]}
+    print(" ", calculate_adherence(scheduled, taken))
+
+    print("\n2. Z-Score Anomaly Detection (systolic BP):")
+    bp_readings = [118, 120, 119, 121, 165, 117, 122]
+    print(" ", detect_anomalies(bp_readings, threshold=1.5))
+
+    print("\n3. Moving Average (mood scores 1-10):")
+    moods = [6, 5, 7, 4, 8, 9, 3, 6, 7]
+    print(" ", moving_average(moods, window=3))
+
+    print("\n4. Pearson Correlation (sleep hrs vs mood):")
+    sleep_hrs = [4, 5, 6, 7, 8, 8, 5]
+    mood_scores = [3, 4, 5, 7, 8, 9, 4]
+    print(" correlation ->", pearson_correlation(sleep_hrs, mood_scores))
+
+    print("\n5. Reminder Scheduler:")
+    scheduler = ReminderScheduler()
+    scheduler.add_reminder(datetime(2026, 7, 14, 8, 0), "Take morning medication", priority=1)
+    scheduler.add_reminder(datetime(2026, 7, 14, 9, 0), "Log daily mood", priority=2)
+    scheduler.add_reminder(datetime(2026, 7, 14, 7, 30), "Doctor appointment reminder", priority=1)
+    print(" next ->", scheduler.next_reminder())
+    print(" upcoming ->", scheduler.upcoming())
+
+    print("\n6. Weekly Summary Report:")
+    entries = [
+        {"date": datetime(2026, 7, 6), "mood": 6, "systolic": 118},
+        {"date": datetime(2026, 7, 7), "mood": 7, "systolic": 121},
+        {"date": datetime(2026, 7, 13), "mood": 5, "systolic": 130},
+    ]
+    print(" ", weekly_summary(entries))
+
+    print("\n7. Deduplication (device sync):")
+    existing = {}
+    incoming = [
+        {"device_id": "fitbit1", "metric": "heart_rate", "timestamp": datetime(2026, 7, 13, 9, 0), "value": 72},
+        {"device_id": "fitbit1", "metric": "heart_rate", "timestamp": datetime(2026, 7, 13, 9, 0), "value": 72}, # dup
+    ]
+    merged = merge_device_readings(existing, incoming)
+    print(" stored readings ->", len(merged))
+
+    print("\n8. K-Way Merge of Device Streams:")
+    stream_a = [(datetime(2026, 7, 13, 8, 0), "fitbit:70bpm"), (datetime(2026, 7, 13, 10, 0), "fitbit:75bpm")]
+    stream_b = [(datetime(2026, 7, 13, 9, 0), "manual:BP 120/80")]
+    print(" ", merge_time_series(stream_a, stream_b))
+
+    print("\n9. AES Field Encryption:")
+    key = hashlib.sha256(b"demo-key").digest() # 32 bytes for AES-256
+    payload = encrypt_field("Patient takes 10mg Lisinopril daily", key)
+    print(" encrypted ->", "error" in payload if isinstance(payload, dict) and "error" in payload else "OK")
+    if "error" not in payload:
+        print(" decrypted ->", decrypt_field(payload, key))
+    else:
+        print(" ", payload["error"])
+
+    print("\n  Journal Keyword Extraction")
+    journal = "I felt tired and anxious today. The pain was worse than usual, tired all day."
+    print(" ", extract_keywords(journal))
