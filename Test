@@ -1,0 +1,310 @@
+import sys
+import argparse
+import unittest
+from selenium import webdriver
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
+
+BASE_URL = "https://www.healthstorylines.com"
+WAIT_TIMEOUT = 15
+
+# Main nav: partial link text -> expected URL fragment
+NAV_ITEMS = [
+    ("Decentralized Clinical Trials", "/dct"),
+    ("Real World Evidence", "/rwe"),
+]
+
+# Footer legal links: partial link text -> expected URL fragment
+FOOTER_LINKS = [
+    ("Terms of Use", "/terms-of-use"),
+    ("Privacy Policy", "/privacy-policy"),
+    ("Cookie Policy", "/cookie-policy"),
+]
+
+# External store / app links: partial href -> human label
+STORE_LINKS = [
+    ("itunes.apple.com", "App Store link"),
+    ("play.google.com", "Google Play link"),
+]
+
+SOCIAL_DOMAINS = ["facebook.com", "twitter.com", "instagram.com"]
+
+VIEWPORTS = [
+    ("desktop", 1920, 1080),
+    ("tablet", 768, 1024),
+    ("mobile", 375, 812),
+]
+
+
+def make_driver(browser):
+    if browser == "chrome":
+        options = webdriver.ChromeOptions()
+        options.add_argument("--start-maximized")
+        options.add_argument("--headless=new")
+        return webdriver.Chrome(options=options)
+
+    if browser == "firefox":
+        options = webdriver.FirefoxOptions()
+        options.add_argument("--width=1920")
+        options.add_argument("--height=1080")
+        options.add_argument("-headless")
+        return webdriver.Firefox(options=options)
+
+    if browser == "edge":
+        options = webdriver.EdgeOptions()
+        options.add_argument("--start-maximized")
+        options.add_argument("--headless=new")
+        return webdriver.Edge(options=options)
+
+    raise ValueError(f"Unsupported browser: {browser}")
+
+
+def load_home(driver):
+    driver.get(BASE_URL)
+    WebDriverWait(driver, WAIT_TIMEOUT).until(
+        EC.presence_of_element_located((By.TAG_NAME, "body"))
+    )
+
+
+def switch_to_new_tab_if_opened(driver, original_handle):
+    """Squarespace sometimes opens external links in a new tab."""
+    if len(driver.window_handles) > 1:
+        for handle in driver.window_handles:
+            if handle != original_handle:
+                driver.switch_to.window(handle)
+                return True
+    return False
+
+
+class HealthStorylinesTestCase(unittest.TestCase):
+    """
+    Base test case. BROWSER is set dynamically per subclass by
+    build_suite_for_browsers() below, so the same test bodies run
+    once per browser.
+    """
+
+    BROWSER = "chrome" # overridden per subclass
+
+    def setUp(self):
+        self.driver = make_driver(self.BROWSER)
+        self.driver.implicitly_wait(5)
+
+    def tearDown(self):
+        self.driver.quit()
+
+    # ---------------- Page load ----------------
+
+    def test_homepage_loads_with_correct_title(self):
+        load_home(self.driver)
+        WebDriverWait(self.driver, WAIT_TIMEOUT).until(
+            EC.title_contains("Health Storylines")
+        )
+        self.assertIn("Health Storylines", self.driver.title)
+
+    def test_homepage_status_no_error_banner(self):
+        load_home(self.driver)
+        body_text = self.driver.find_element(By.TAG_NAME, "body").text.lower()
+        for phrase in ("404", "page not found", "site is temporarily unavailable"):
+            self.assertNotIn(phrase, body_text)
+
+    def test_page_source_not_empty(self):
+        load_home(self.driver)
+        self.assertGreater(len(self.driver.page_source), 500)
+
+    def test_hero_heading_present(self):
+        load_home(self.driver)
+        body_text = self.driver.find_element(By.TAG_NAME, "body").text
+        self.assertIn("Your Health. Your Story.", body_text)
+
+    # ---------------- Primary navigation ----------------
+
+    def test_nav_links_present_and_navigate(self):
+        for link_text, url_fragment in NAV_ITEMS:
+            with self.subTest(link=link_text):
+                load_home(self.driver)
+                try:
+                    link = WebDriverWait(self.driver, WAIT_TIMEOUT).until(
+                        EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, link_text))
+                    )
+                except TimeoutException:
+                    self.fail(f"Nav link '{link_text}' not found or not clickable")
+
+                link.click()
+
+                WebDriverWait(self.driver, WAIT_TIMEOUT).until(
+                    lambda d: url_fragment in d.current_url
+                )
+                self.assertIn(
+                    url_fragment,
+                    self.driver.current_url,
+                    f"Expected '{url_fragment}' in URL after clicking '{link_text}', "
+                    f"got {self.driver.current_url}",
+                )
+
+    def test_logo_links_back_to_home(self):
+        load_home(self.driver)
+        rwe_link = WebDriverWait(self.driver, WAIT_TIMEOUT).until(
+            EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Real World Evidence"))
+        )
+        rwe_link.click()
+        WebDriverWait(self.driver, WAIT_TIMEOUT).until(
+            lambda d: "/rwe" in d.current_url
+        )
+
+        home_link = WebDriverWait(self.driver, WAIT_TIMEOUT).until(
+            EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Health Storylines"))
+        )
+        home_link.click()
+        WebDriverWait(self.driver, WAIT_TIMEOUT).until(
+            lambda d: d.current_url.rstrip("/") == BASE_URL
+        )
+        self.assertEqual(self.driver.current_url.rstrip("/"), BASE_URL)
+
+    # ---------------- Call-to-action / downloads ----------------
+
+    def test_start_storylines_cta_present(self):
+        load_home(self.driver)
+        try:
+            cta = self.driver.find_element(
+                By.PARTIAL_LINK_TEXT, "Start Your Storylines Today"
+            )
+        except NoSuchElementException:
+            self.fail("Primary CTA 'Start Your Storylines Today!' not found")
+        self.assertIn("download-health-storylines", cta.get_attribute("href"))
+
+    def test_app_store_links_present(self):
+        load_home(self.driver)
+        for domain, label in STORE_LINKS:
+            with self.subTest(store=label):
+                elements = self.driver.find_elements(
+                    By.CSS_SELECTOR, f"a[href*='{domain}']"
+                )
+                self.assertGreater(len(elements), 0, f"{label} not found on homepage")
+
+    def test_web_app_login_link_present(self):
+        load_home(self.driver)
+        elements = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/app/#/login']")
+        self.assertGreater(len(elements), 0, "Web app login link not found")
+
+    # ---------------- Footer / legal / contact ----------------
+
+    def test_footer_legal_links_present_and_navigate(self):
+        for link_text, url_fragment in FOOTER_LINKS:
+            with self.subTest(link=link_text):
+                load_home(self.driver)
+                # Scroll to footer so the link is interactable
+                self.driver.execute_script(
+                    "window.scrollTo(0, document.body.scrollHeight);"
+                )
+                try:
+                    link = WebDriverWait(self.driver, WAIT_TIMEOUT).until(
+                        EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, link_text))
+                    )
+                except TimeoutException:
+                    self.fail(f"Footer link '{link_text}' not found or not clickable")
+
+                link.click()
+                WebDriverWait(self.driver, WAIT_TIMEOUT).until(
+                    lambda d: url_fragment in d.current_url
+                )
+                self.assertIn(url_fragment, self.driver.current_url)
+
+    def test_support_link_present(self):
+        load_home(self.driver)
+        elements = self.driver.find_elements(
+            By.CSS_SELECTOR, "a[href*='healthstorylines.zendesk.com']"
+        )
+        self.assertGreater(len(elements), 0, "Support (Zendesk) link not found")
+
+    def test_contact_email_link_present(self):
+        load_home(self.driver)
+        try:
+            mail_link = self.driver.find_element(By.CSS_SELECTOR, "a[href^='mailto:']")
+        except NoSuchElementException:
+            self.fail("No mailto: contact link found")
+        self.assertTrue(mail_link.get_attribute("href").startswith("mailto:"))
+
+    def test_social_links_present(self):
+        load_home(self.driver)
+        selector = ", ".join(f"a[href*='{d}']" for d in SOCIAL_DOMAINS)
+        socials = self.driver.find_elements(By.CSS_SELECTOR, selector)
+        self.assertGreater(len(socials), 0, "No social media links found on homepage")
+
+    def test_back_to_top_link_present(self):
+        load_home(self.driver)
+        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        elements = self.driver.find_elements(By.PARTIAL_LINK_TEXT, "Back to Top")
+        self.assertGreater(len(elements), 0, "'Back to Top' link not found")
+
+    # ---------------- Responsive / compatibility ----------------
+
+    def test_page_renders_at_all_viewports(self):
+        for name, width, height in VIEWPORTS:
+            with self.subTest(viewport=name):
+                self.driver.set_window_size(width, height)
+                load_home(self.driver)
+                body = self.driver.find_element(By.TAG_NAME, "body")
+                self.assertTrue(
+                    body.is_displayed(),
+                    f"Body not displayed at {name} viewport ({width}x{height})",
+                )
+
+    def test_no_horizontal_overflow_on_mobile(self):
+        self.driver.set_window_size(375, 812)
+        load_home(self.driver)
+        scroll_width = self.driver.execute_script(
+            "return document.documentElement.scrollWidth"
+        )
+        client_width = self.driver.execute_script(
+            "return document.documentElement.clientWidth"
+        )
+        # Allow a small tolerance for scrollbar rendering differences
+        self.assertLessEqual(
+            scroll_width,
+            client_width + 20,
+            f"Horizontal overflow detected: scrollWidth={scroll_width}, "
+            f"clientWidth={client_width}",
+        )
+
+    def test_images_have_valid_src(self):
+        load_home(self.driver)
+        images = self.driver.find_elements(By.TAG_NAME, "img")
+        self.assertGreater(len(images), 0, "No images found on homepage")
+        broken = [
+            img.get_attribute("src")
+            for img in images[:20] # sample first 20 to keep test fast
+            if not img.get_attribute("src")
+        ]
+        self.assertEqual(broken, [], "Found <img> tags with empty src attribute")
+
+
+def build_suite_for_browsers(browsers):
+    """Create one TestCase subclass per browser so results are reported
+    separately (e.g. HealthStorylinesTestCase_chrome, ..._firefox)."""
+    suite = unittest.TestSuite()
+    loader = unittest.TestLoader()
+
+    for browser in browsers:
+        cls_name = f"HealthStorylinesTestCase_{browser}"
+        browser_cls = type(cls_name, (HealthStorylinesTestCase,), {"BROWSER": browser})
+        suite.addTests(loader.loadTestsFromTestCase(browser_cls))
+
+    return suite
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run healthstorylines.com Selenium tests")
+    parser.add_argument(
+        "--browser",
+        choices=["chrome", "firefox", "edge"],
+        help="Run against a single browser only (default: run all three)",
+    )
+    args, remaining = parser.parse_known_args()
+
+    browsers_to_run = [args.browser] if args.browser else ["chrome", "firefox", "edge"]
+
+    runner = unittest.TextTestRunner(verbosity=2)
+    result = runner.run(build_suite_for_browsers(browsers_to_run))
+
+    sys.exit(0 if result.wasSuccessful() else 1)
